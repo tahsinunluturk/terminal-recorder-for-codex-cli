@@ -1,0 +1,11 @@
+# Captures can contain secrets; never commit them.
+events.jsonl
+*.jsonl
+.terminal-viewer-hidden.json
+session-*/
+captures/
+
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store

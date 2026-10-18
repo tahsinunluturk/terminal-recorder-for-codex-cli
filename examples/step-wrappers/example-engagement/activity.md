@@ -1,0 +1,4 @@
+- 2026-10-18T12:37:53Z `health-01` exit 0: Save the health endpoint response
+  - command: `curl -sS -D engagements/example/evidence/health-01.headers -o engagements/example/evidence/health-01.json http://127.0.0.1:8799/health.json`
+- 2026-10-18T12:37:53Z `health-01-read` exit 0 (offline): Show the saved response
+  - command: `nl -ba engagements/example/evidence/health-01.json`

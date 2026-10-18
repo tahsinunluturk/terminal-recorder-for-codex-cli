@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Run one command as a named step, so the terminal recorder can show why it ran.
+#
+#   run-step ENGAGEMENT ACTION_ID --purpose TEXT [--target TEXT]
+#            [--artifact FILE]... [--offline] -- COMMAND [ARG]...
+#
+# Saved files belong under engagements/ENGAGEMENT/evidence/. Each step is
+# appended to engagements/ENGAGEMENT/activity.md. The exit status is the
+# command's own.
+set -uo pipefail
+
+usage() {
+    sed -n '4,5p' "$0" | sed 's/^# *//' >&2
+    exit 64
+}
+fail() { printf 'run-step: %s\n' "$*" >&2; exit 64; }
+
+[[ $# -ge 2 ]] || usage
+engagement="$1"; action="$2"; shift 2
+[[ "$engagement" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "engagement must be lowercase letters, digits, - or _"
+[[ "$action" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "action ID must be letters, digits, ., - or _"
+
+purpose="" target="" offline=0
+artifacts=()
+while [[ $# -gt 0 && "$1" != "--" ]]; do
+    case "$1" in
+        --purpose) [[ $# -ge 2 ]] || fail "--purpose needs a value"; purpose="$2"; shift 2 ;;
+        --target) [[ $# -ge 2 ]] || fail "--target needs a value"; target="$2"; shift 2 ;;
+        --artifact) [[ $# -ge 2 ]] || fail "--artifact needs a value"; artifacts+=("$2"); shift 2 ;;
+        --offline) offline=1; shift ;;
+        *) fail "unknown option: $1" ;;
+    esac
+done
+[[ "${1:-}" == "--" ]] || fail "put -- before the command"
+shift
+[[ $# -gt 0 ]] || fail "no command given after --"
+[[ -n "$purpose" ]] || fail "--purpose is required"
+
+evidence="engagements/$engagement/evidence"
+mkdir -p -- "$evidence" || fail "cannot create $evidence"
+for file in ${artifacts[@]+"${artifacts[@]}"}; do
+    [[ "$file" == "$evidence"/* ]] \
+        || printf 'run-step: warning: %s is outside %s/, so it will not be linked\n' "$file" "$evidence" >&2
+    mkdir -p -- "$(dirname -- "$file")"
+done
+
+printf '[run-step] action %s started in %s\n' "$action" "$PWD"
+started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+"$@"
+status=$?
+printf '[run-step] exit %d\n' "$status"
+for file in ${artifacts[@]+"${artifacts[@]}"}; do
+    if [[ -f "$file" ]]; then
+        printf '[run-step] artifact %s %d bytes\n' "$file" "$(wc -c < "$file")"
+    else
+        printf '[run-step] artifact %s missing\n' "$file"
+    fi
+done
+
+command_text="$(printf '%q ' "$@")"
+{
+    printf -- '- %s `%s` exit %d%s: %s\n' "$started" "$action" "$status" \
+        "$([[ $offline == 1 ]] && printf ' (offline)')" "$purpose"
+    [[ -z "$target" ]] || printf -- '  - target: %s\n' "$target"
+    printf -- '  - command: `%s`\n' "${command_text% }"
+} >> "engagements/$engagement/activity.md"
+exit "$status"

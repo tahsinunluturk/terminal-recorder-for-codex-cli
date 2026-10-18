@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# Opt-in launcher for a NEW Codex CLI session. Never attaches to an existing one.
+set -Eeuo pipefail
+umask 077
+
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+capture_dir=""
+viewer_port=0
+children=()
+
+say_error() { printf 'start-recorded-codex: %s\n' "$*" >&2; }
+fail() { say_error "$*"; exit 1; }
+
+cleanup() {
+    local status=$? pid i attempt
+    trap - EXIT INT TERM HUP
+    # Stop the viewer, then let the recorder flush before stopping its upstream
+    # executor. Never signal a PID absent from this shell's own job list.
+    for ((i=${#children[@]}-1; i>=0; i--)); do
+        pid="${children[i]}"
+        if jobs -pr | grep -Fxq -- "$pid"; then
+            kill "$pid" 2>/dev/null || true
+            for ((attempt=0; attempt<70; attempt++)); do
+                if ! jobs -pr | grep -Fxq -- "$pid"; then break; fi
+                sleep 0.05
+            done
+            if jobs -pr | grep -Fxq -- "$pid"; then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+        fi
+        wait "$pid" 2>/dev/null || true
+    done
+    if [[ -n "$capture_dir" ]]; then
+        printf 'Capture retained: %s\n' "$capture_dir" >&2
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+capture_root_path() {
+    if [[ -n "${CODEX_TERMINAL_RECORDER_DIR:-}" ]]; then
+        printf '%s\n' "$CODEX_TERMINAL_RECORDER_DIR"
+    else
+        printf '%s/terminal-recorder-for-codex-cli\n' "${XDG_STATE_HOME:-${HOME:?}/.local/state}"
+    fi
+}
+
+# Read-only preflight: reports what a recorded session needs without creating
+# directories or starting a server. Exit status is non-zero if anything fails.
+run_check() {
+    local problems=0 python_version codex_version help_text root parent
+    check_line() { printf '%-6s %s\n' "$1" "$2"; [[ "$1" != FAIL ]] || problems=$((problems + 1)); }
+    if [[ "$(id -u)" == 0 ]]; then
+        check_line FAIL "running as root; use an unprivileged account"
+    else
+        check_line OK "user $(id -un) (not root)"
+    fi
+    if command -v python3 >/dev/null 2>&1 \
+        && python_version="$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3]); raise SystemExit(sys.version_info < (3, 9))' 2>/dev/null)"; then
+        check_line OK "python3 $python_version"
+    elif [[ -n "${python_version:-}" ]]; then
+        check_line FAIL "python3 $python_version is too old; 3.9 or newer is required"
+    else
+        check_line FAIL "python3 is not installed"
+    fi
+    if command -v codex >/dev/null 2>&1; then
+        codex_version="$(env -u CODEX_EXEC_SERVER_URL codex --version 2>/dev/null | head -n 1)" || true
+        check_line OK "codex found: ${codex_version:-version unknown} ($(command -v codex))"
+        if help_text="$(env -u CODEX_EXEC_SERVER_URL codex exec-server --help 2>&1)" \
+            && [[ "$help_text" == *--listen* ]]; then
+            check_line OK "codex exec-server supports --listen"
+        else
+            check_line FAIL "codex exec-server --listen is unavailable; update Codex CLI"
+        fi
+    else
+        check_line FAIL "codex is not on PATH"
+    fi
+    if [[ -f "$here/proxy.py" && -f "$here/ui/server.py" ]]; then
+        check_line OK "recorder and viewer source present"
+    else
+        check_line FAIL "recorder or viewer source is missing next to this script"
+    fi
+    root="$(capture_root_path)"
+    parent="$root"
+    while [[ ! -e "$parent" && "$parent" == */* ]]; do parent="${parent%/*}"; done
+    if [[ -L "$root" ]]; then
+        check_line FAIL "capture directory is a symlink: $root"
+    elif [[ -d "$root" && -w "$root" ]] || [[ ! -e "$root" && -d "$parent" && -w "$parent" ]]; then
+        check_line OK "captures will be stored in $root"
+    else
+        check_line FAIL "capture directory is not writable: $root"
+    fi
+    if ((problems)); then
+        printf '\n%d problem(s) found; a recorded session would not start.\n' "$problems"
+        return 1
+    fi
+    printf '\nReady. Start a recorded session with: %s\n' "$0"
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    cat <<'HELP'
+Usage: start-recorded-codex [--viewer-port PORT] [-- CODEX_ARGS...]
+       start-recorded-codex --check
+
+Starts a separate, opt-in Codex CLI with a loopback executor recorder and
+read-only local web viewer. An already running Codex CLI is never modified.
+PORT is a free loopback-only viewer port; omit it to let the OS choose one.
+Arguments after -- are passed to codex unchanged.
+
+--check reports whether this machine can run a recorded session, without
+starting anything.
+
+Captures are kept under $CODEX_TERMINAL_RECORDER_DIR when set, otherwise
+$XDG_STATE_HOME/terminal-recorder-for-codex-cli (default ~/.local/state/...).
+HELP
+    exit 0
+fi
+if [[ "${1:-}" == "--check" ]]; then
+    run_check
+    exit
+fi
+if [[ "${1:-}" == "--viewer-port" ]]; then
+    [[ $# -ge 2 ]] || fail "--viewer-port requires a port number"
+    viewer_port="$2"
+    shift 2
+fi
+if [[ "${1:-}" == "--" ]]; then shift; fi
+[[ "$viewer_port" =~ ^[1-9][0-9]{0,4}$ || "$viewer_port" == 0 ]] \
+    || fail "viewer port must be 0 or a number from 1 to 65535"
+((10#$viewer_port <= 65535)) || fail "viewer port must be at most 65535"
+
+[[ "$(id -u)" != 0 ]] || fail "refusing to run as root; use an unprivileged account. No session was started"
+command -v codex >/dev/null 2>&1 || fail "codex is not installed"
+command -v python3 >/dev/null 2>&1 || fail "python3 is not installed"
+[[ -f "$here/proxy.py" && -f "$here/ui/server.py" ]] || fail "recorder or viewer source is missing"
+
+# This probes a separate short-lived CLI process; it does not talk to any
+# already-running Codex session. Installed versions can differ from upstream.
+if ! exec_help="$(env -u CODEX_EXEC_SERVER_URL codex exec-server --help 2>&1)"; then
+    fail "this Codex installation has no usable exec-server; no session was started"
+fi
+[[ "$exec_help" == *--listen* ]] || fail "exec-server lacks --listen; no session was started"
+
+capture_root="$(capture_root_path)"
+[[ ! -L "$capture_root" ]] || fail "capture root must not be a symlink: $capture_root"
+mkdir -p -m 700 -- "$capture_root" || fail "cannot create capture root: $capture_root"
+[[ -d "$capture_root" && ! -L "$capture_root" ]] || fail "capture root is not a real directory"
+chmod 700 -- "$capture_root" || fail "cannot make capture root private"
+capture_dir="$(mktemp -d "$capture_root/session-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXXXX")" \
+    || fail "cannot create private capture directory"
+chmod 700 -- "$capture_dir"
+
+wait_first_line() {
+    local pid="$1" file="$2" label="$3" line attempt
+    for ((attempt=0; attempt<400; attempt++)); do
+        if [[ -s "$file" ]]; then
+            IFS= read -r line < "$file" || true
+            if [[ -n "$line" ]]; then
+                printf '%s\n' "$line"
+                return 0
+            fi
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            say_error "$label exited during startup"
+            [[ ! -s "$capture_dir/$label.stderr" ]] || tail -n 12 -- "$capture_dir/$label.stderr" >&2
+            return 1
+        fi
+        sleep 0.05
+    done
+    say_error "$label did not announce a loopback address within 20 seconds"
+    [[ ! -s "$capture_dir/$label.stderr" ]] || tail -n 12 -- "$capture_dir/$label.stderr" >&2
+    return 1
+}
+
+journal_connections_drained() {
+    python3 - "$capture_dir/events.jsonl" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+open_connections = set()
+try:
+    with path.open("r", encoding="utf-8") as journal:
+        for line in journal:
+            event = json.loads(line)
+            connection_id = event.get("connection_id")
+            if event.get("type") == "connection_open":
+                open_connections.add(connection_id)
+            elif event.get("type") == "connection_closed":
+                open_connections.discard(connection_id)
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(bool(open_connections))
+PY
+}
+
+# Port zero asks each server to choose its own unused loopback port. The executor
+# prints the bound URL as its first stdout line (Codex's reference launcher uses
+# the same contract). Each process and its logs belong only to this invocation.
+env -u CODEX_EXEC_SERVER_URL codex exec-server --listen ws://127.0.0.1:0 \
+    >"$capture_dir/exec-server.stdout" 2>"$capture_dir/exec-server.stderr" &
+exec_pid=$!
+children+=("$exec_pid")
+exec_url="$(wait_first_line "$exec_pid" "$capture_dir/exec-server.stdout" exec-server)" \
+    || fail "exec-server failed to start"
+[[ "$exec_url" =~ ^ws://127[.]0[.]0[.]1:([1-9][0-9]{0,4})/?$ ]] \
+    || fail "exec-server announced a non-loopback or invalid URL"
+((10#${BASH_REMATCH[1]} <= 65535)) || fail "exec-server announced an invalid port"
+
+python3 "$here/proxy.py" --listen-port 0 --upstream "$exec_url" --capture-dir "$capture_dir" \
+    >"$capture_dir/proxy.stdout" 2>"$capture_dir/proxy.stderr" &
+proxy_pid=$!
+children+=("$proxy_pid")
+proxy_line="$(wait_first_line "$proxy_pid" "$capture_dir/proxy.stdout" proxy)" \
+    || fail "recorder proxy failed to start"
+proxy_pattern='^Recorder listening at (ws://127[.]0[.]0[.]1:[1-9][0-9]{0,4}); journal:'
+[[ "$proxy_line" =~ $proxy_pattern ]] \
+    || fail "recorder proxy did not announce a loopback URL"
+proxy_url="${BASH_REMATCH[1]}"
+
+python3 "$here/ui/server.py" --capture-dir "$capture_dir" --port "$viewer_port" \
+    >"$capture_dir/viewer.stdout" 2>"$capture_dir/viewer.stderr" &
+viewer_pid=$!
+children+=("$viewer_pid")
+viewer_line="$(wait_first_line "$viewer_pid" "$capture_dir/viewer.stdout" viewer)" \
+    || fail "web viewer failed to start"
+viewer_pattern='^Terminal viewer: (http://127[.]0[.]0[.]1:[1-9][0-9]{0,4}/)$'
+[[ "$viewer_line" =~ $viewer_pattern ]] \
+    || fail "web viewer did not announce a loopback URL"
+viewer_url="${BASH_REMATCH[1]}"
+
+printf 'Live viewer: %s\nCapture: %s\n' "$viewer_url" "$capture_dir" >&2
+printf 'This records only command traffic routed through this new Codex session.\n' >&2
+
+# Keep Codex attached to this terminal. CODEX_EXEC_SERVER_URL is set for this
+# child alone; the parent shell and any existing CLI retain their environment.
+codex_status=0
+CODEX_EXEC_SERVER_URL="$proxy_url" codex "$@" || codex_status=$?
+# Let the proxy write connection-close/gap events from the CLI's final socket
+# before orderly shutdown. If it cannot, the journal remains visibly partial.
+sleep 0.1
+for ((attempt=0; attempt<30; attempt++)); do
+    if journal_connections_drained; then break; fi
+    if ! kill -0 "$proxy_pid" 2>/dev/null; then break; fi
+    sleep 0.1
+done
+exit "$codex_status"

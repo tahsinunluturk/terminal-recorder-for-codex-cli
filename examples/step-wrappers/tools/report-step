@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Record what a step showed, citing saved evidence, in engagements/ENGAGEMENT/report.md.
+
+  report-step ENGAGEMENT ACTION_ID --purpose TEXT --observed TEXT
+              [--excerpt FILE@FROM:TO]... [--excerpt action=ID@FROM:TO]...
+              [--interpretation TEXT] [--decision TEXT] [--target TEXT]
+
+FILE may be written as evidence/NAME for engagements/ENGAGEMENT/evidence/NAME.
+A file excerpt copies those lines into the report with the file's SHA-256.
+An action= excerpt only names the run-step whose terminal output you mean; that
+output lives in the recorder capture, not in a file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+ENGAGEMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+ACTION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+EXCERPT = re.compile(r"^(?P<ref>.+?)@(?P<start>\d+)(?::(?P<end>\d+))?$")
+
+
+def fence(text: str) -> str:
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def render_excerpt(engagement: str, value: str) -> str:
+    match = EXCERPT.match(value)
+    if not match:
+        raise SystemExit(f"report-step: excerpt must look like FILE@FROM:TO or action=ID@FROM:TO: {value}")
+    ref, start = match["ref"], int(match["start"])
+    end = int(match["end"] or start)
+    if start < 1 or end < start:
+        raise SystemExit(f"report-step: invalid line range in {value}")
+    if ref.startswith("action="):
+        action = ref[len("action="):]
+        if not ACTION.match(action):
+            raise SystemExit(f"report-step: invalid action ID in {value}")
+        return f"- Output of action `{action}`, lines {start}-{end} (see the recorder capture)\n"
+    path = Path(f"engagements/{engagement}/{ref}" if ref.startswith("evidence/") else ref)
+    evidence = Path("engagements", engagement, "evidence")
+    if evidence not in path.parents or ".." in path.parts:
+        raise SystemExit(f"report-step: excerpts must come from {evidence}/: {ref}")
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise SystemExit(f"report-step: cannot read {path}: {error.strerror}")
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if end > len(lines):
+        raise SystemExit(f"report-step: {path} has only {len(lines)} lines")
+    text = "\n".join(lines[start - 1:end])
+    mark = fence(text)
+    digest = hashlib.sha256(data).hexdigest()
+    print(f"  excerpt {path} lines {start}-{end} sha256 {digest[:12]}")
+    return f"- `{path}` lines {start}-{end}, SHA-256 `{digest}`\n\n{mark}text\n{text}\n{mark}\n"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("engagement")
+    parser.add_argument("action_id")
+    parser.add_argument("--purpose", required=True)
+    parser.add_argument("--observed", required=True)
+    parser.add_argument("--excerpt", action="append", default=[])
+    parser.add_argument("--interpretation")
+    parser.add_argument("--decision")
+    parser.add_argument("--target")
+    args = parser.parse_args()
+    if not ENGAGEMENT.match(args.engagement):
+        parser.error("engagement must be lowercase letters, digits, - or _")
+    if not ACTION.match(args.action_id):
+        parser.error("action ID must be letters, digits, ., - or _")
+
+    excerpts = [render_excerpt(args.engagement, value) for value in args.excerpt]
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    parts = [f"## {args.action_id}\n\n", f"- Recorded: {stamp}\n", f"- Purpose: {args.purpose}\n"]
+    if args.target:
+        parts.append(f"- Target: {args.target}\n")
+    parts.append(f"\n**Observed:** {args.observed}\n")
+    if args.interpretation:
+        parts.append(f"\n**Interpretation:** {args.interpretation}\n")
+    if excerpts:
+        parts.append("\n**Evidence**\n\n" + "\n".join(excerpts))
+    if args.decision:
+        parts.append(f"\n**Next step (proposed, not run):** {args.decision}\n")
+    report = Path("engagements", args.engagement, "report.md")
+    report.parent.mkdir(parents=True, exist_ok=True)
+    with report.open("a", encoding="utf-8") as handle:
+        if handle.tell() == 0:
+            handle.write(f"# Report: {args.engagement}\n\n")
+        handle.write("".join(parts) + "\n")
+    print(f"Recorded step {args.action_id} in {report}")
+    print(f"Observed: {args.observed}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

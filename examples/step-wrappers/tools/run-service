@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Run a long-lived command (a server, a listener) in the foreground as a named
+# service, so the terminal recorder can show why it runs.
+#
+#   run-service ENGAGEMENT SERVICE_ID --purpose TEXT [--target TEXT] -- COMMAND [ARG]...
+#
+# The start is appended to engagements/ENGAGEMENT/activity.md.
+set -uo pipefail
+
+fail() { printf 'run-service: %s\n' "$*" >&2; exit 64; }
+
+[[ $# -ge 2 ]] || fail "usage: run-service ENGAGEMENT SERVICE_ID --purpose TEXT [--target TEXT] -- COMMAND..."
+engagement="$1"; service="$2"; shift 2
+[[ "$engagement" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "engagement must be lowercase letters, digits, - or _"
+[[ "$service" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "service ID must be letters, digits, ., - or _"
+
+purpose="" target=""
+while [[ $# -gt 0 && "$1" != "--" ]]; do
+    case "$1" in
+        --purpose) [[ $# -ge 2 ]] || fail "--purpose needs a value"; purpose="$2"; shift 2 ;;
+        --target) [[ $# -ge 2 ]] || fail "--target needs a value"; target="$2"; shift 2 ;;
+        *) fail "unknown option: $1" ;;
+    esac
+done
+[[ "${1:-}" == "--" ]] || fail "put -- before the command"
+shift
+[[ $# -gt 0 ]] || fail "no command given after --"
+[[ -n "$purpose" ]] || fail "--purpose is required"
+
+mkdir -p -- "engagements/$engagement/evidence" || fail "cannot create engagements/$engagement"
+command_text="$(printf '%q ' "$@")"
+{
+    printf -- '- %s service `%s` started: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$service" "$purpose"
+    [[ -z "$target" ]] || printf -- '  - target: %s\n' "$target"
+    printf -- '  - command: `%s`\n' "${command_text% }"
+} >> "engagements/$engagement/activity.md"
+printf '[run-service] %s running in the foreground; stop it with Ctrl+C\n' "$service"
+exec "$@"

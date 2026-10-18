@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex terminal recordings</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/terminal_render.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">›_</span><div><strong>Terminal recordings</strong><small>Local viewer · raw capture preserved</small></div></div>
+      <div class="top-state"><span id="viewer-state" class="state-dot">Connecting</span><span id="record-state">Waiting for recording</span></div>
+    </header>
+    <div id="demo-banner" class="demo-banner" hidden>SYNTHETIC PREVIEW · Commands and output on this page are not from a real session.</div>
+    <div id="alert" class="alert" hidden></div>
+    <div id="visibility-status" class="visibility-status" role="status" aria-live="polite" hidden></div>
+    <div class="workspace">
+      <aside class="sidebar" aria-label="Terminals">
+        <div class="sidebar-head"><div><h1>Terminals</h1><p id="summary">No processes yet</p></div><span id="count" class="count">0</span></div>
+        <div class="search-wrap"><label for="search">Search</label><div class="search-row"><input id="search" type="search" placeholder="Command, output, ID…" autocomplete="off"><button id="toggle-filters" class="filter-toggle" type="button" aria-expanded="false" aria-controls="filter-panel">Filters</button></div></div>
+        <div id="filter-panel" class="filter-panel" hidden>
+          <label class="search-option"><input id="search-output" type="checkbox" checked> Also search recorded output</label>
+          <div class="filter-controls"><label for="status-filter">Status</label><select id="status-filter"><option value="all">All statuses</option><option value="running">Running</option><option value="closed">Closed</option><option value="incomplete">Incomplete</option><option value="failed">Launch failed</option><option value="nonzero">Non-zero exit</option></select><label for="engagement-filter">Engagement</label><select id="engagement-filter"><option value="all">All engagements</option></select></div>
+        </div>
+        <div id="filter-row" class="filter-row" hidden><span id="filter-status" role="status" aria-live="polite"></span><button id="reset-filters" type="button">Reset filters</button></div>
+        <div class="sidebar-controls"><label for="sort-order">Order</label><select id="sort-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></div>
+        <div id="process-list" class="process-list" role="listbox" aria-label="Recorded processes"></div>
+        <div class="hidden-section">
+          <div class="list-actions"><button id="show-hidden" class="hidden-toggle" type="button" aria-expanded="false" aria-controls="hidden-panel">Hidden terminals <span id="hidden-count">0</span></button><button id="clear-all" class="hide-all" type="button" title="Hide every terminal in the list. Processes keep running and the raw capture is unchanged." disabled>Hide all</button></div>
+          <div id="hidden-panel" hidden>
+            <p>These terminals were removed from the list only. Running processes were not stopped; raw capture remains intact.</p>
+            <div id="hidden-list" class="hidden-list" role="list" aria-label="Hidden terminals"></div>
+            <p id="hidden-empty" class="hidden-empty">No hidden terminals.</p>
+          </div>
+        </div>
+        <div class="sidebar-foot">Closed terminals stay here. Reloading replays the capture file.</div>
+      </aside>
+      <main class="main">
+        <div id="empty" class="empty-state"><div class="empty-icon">▣</div><h2 id="empty-title">No terminal recordings yet</h2><p id="empty-message">New processes appear here. This viewer does not control the Codex session.</p></div>
+        <section id="detail" class="detail" hidden>
+          <div class="detail-head">
+            <div class="detail-title"><h2 id="process-title"></h2><p id="process-purpose" class="detail-purpose" tabindex="0" aria-label="Recorded purpose text"></p></div>
+            <div class="badges"><span id="life-badge" class="badge"></span><span id="integrity-badge" class="badge"></span></div>
+          </div>
+          <div class="detail-summary"><code id="command-line" class="command-line" title="Full command and details are in the Details tab"></code><span id="summary-meta" class="summary-meta"></span></div>
+          <div class="detail-toolbar"><div class="detail-buttons"><button id="copy-command" type="button" disabled>Copy command</button><button id="copy-purpose" type="button" disabled>Copy purpose</button><button id="toggle-export" type="button" aria-expanded="false" aria-controls="export-panel">Export Markdown</button></div><p id="copy-status" role="status" aria-live="polite"></p><button id="hide-selected" class="hide-button" type="button" aria-describedby="hide-help" disabled>Remove from list</button><span id="hide-help" hidden>Only changes this view; does not stop the process or delete raw capture.</span></div>
+          <div id="export-panel" class="export-bar" hidden><div class="export-controls"><label for="export-from">Output lines</label><input id="export-from" type="number" min="1" placeholder="first" inputmode="numeric"><span>–</span><input id="export-to" type="number" min="1" placeholder="last" inputmode="numeric" aria-label="Last output line"><span id="export-total"></span><button id="copy-markdown" type="button">Copy</button><button id="download-markdown" type="button">Download .md</button></div><p>Includes purpose, command, status, the selected terminal-view lines and the raw-output SHA-256.</p></div>
+          <div id="failure-panel" class="failure-panel" hidden><strong>Launch failed</strong><p id="failure-reason"></p></div>
+          <div id="gap-panel" class="gap-panel" hidden><strong id="gap-title">Incomplete recording</strong><ul id="gap-list"></ul></div>
+          <div class="view-switch" role="tablist" aria-label="Terminal view">
+            <button id="view-frames" type="button" role="tab" aria-selected="true" aria-controls="frames-panel" class="active">Event stream</button>
+            <button id="view-terminal" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel">Raw terminal</button>
+            <button id="view-details" type="button" role="tab" aria-selected="false" aria-controls="details-panel">Details</button>
+            <button id="view-timeline" type="button" role="tab" aria-selected="false" aria-controls="timeline-panel">Timeline</button>
+          </div>
+          <div id="frames-panel" class="view-panel" role="tabpanel" aria-labelledby="view-frames">
+            <div class="output-toolbar"><div><h3>Input and output</h3><p>Arrival order; control characters shown visibly.</p></div><div class="toolbar-actions"><label>Stream <select id="stream-filter"><option value="all">All</option><option value="stdout">stdout</option><option value="stderr">stderr</option><option value="pty">PTY</option><option value="stdin">stdin</option></select></label><a id="download-raw" href="#" download>Download raw bytes</a><a href="/api/capture" download>Capture JSONL</a></div></div>
+            <div id="output" class="output" role="log" tabindex="0" aria-label="Terminal input and output"></div>
+            <div id="no-output" class="no-output" hidden>No data in this stream yet.</div>
+          </div>
+          <div id="terminal-panel" class="view-panel" role="tabpanel" aria-labelledby="view-terminal" hidden>
+            <div class="terminal-reason"><strong id="terminal-reason-source">Reason</strong><span id="terminal-reason"></span></div>
+            <div class="output-toolbar"><div><h3>Terminal view</h3><p>First line: recorded command. Then observed output, controls rendered safely.</p></div><div class="toolbar-actions"><a id="download-output" href="#" download>Download raw output</a><a href="/api/capture" download>Capture JSONL</a></div></div>
+            <p id="terminal-paused" class="terminal-paused" hidden>Live display updates are paused while text is selected. Clear the selection to resume.</p>
+            <div id="terminal-screen" class="terminal-screen" role="log" tabindex="0" aria-label="Continuous terminal output"><pre id="terminal-output"></pre></div>
+            <div id="input-panel" class="input-panel" hidden><strong>Sent input</strong><p>These are stdin requests. They may have been echoed in PTY output. Delivery status appears separately.</p><div id="input-list"></div></div>
+          </div>
+          <div id="details-panel" class="view-panel details-panel" role="tabpanel" aria-labelledby="view-details" hidden>
+            <div id="action-summary" class="action-summary" tabindex="0" aria-label="Action summary" hidden><div class="action-summary-head"><span id="action-kind"></span><code id="action-id"></code></div><p id="action-inner"></p><button id="copy-inner-command" type="button" hidden>Copy inner command</button><div id="action-artifacts" class="action-artifacts" hidden></div><p id="action-caution" class="action-caution"></p></div>
+            <section id="related-panel" class="related-panel" aria-labelledby="related-heading" tabindex="0" hidden><div class="related-heading-row"><h3 id="related-heading">Related terminals</h3><button id="copy-relationships" type="button">Copy relationship details</button></div><p>Linked by recorded action IDs or exact evidence paths. A link does not prove the command succeeded.</p><div id="related-list" class="related-list"></div></section>
+            <div class="command-panel"><div class="label">EXECUTED COMMAND</div><pre id="command" tabindex="0" aria-label="Executed command text"></pre><div class="reason"><span id="reason-source">Reason</span><p id="reason"></p></div><div class="note-editor"><label for="human-note">Your note <small>(separate from the capture; up to 1,000 characters)</small></label><textarea id="human-note" rows="2" maxlength="1000" placeholder="Add a short explanation for this terminal"></textarea><div class="note-actions"><button id="save-note" type="button" disabled>Save note</button><span id="note-status" role="status" aria-live="polite"></span></div></div></div>
+            <dl class="metadata">
+              <div><dt>Started</dt><dd id="started"></dd></div>
+              <div><dt>Ended</dt><dd id="ended"></dd></div>
+              <div><dt>Process ID</dt><dd id="pid"></dd></div>
+              <div><dt>Working directory</dt><dd id="cwd"></dd></div>
+              <div><dt>Exit code</dt><dd id="exit-code"></dd></div>
+              <div><dt>Raw bytes</dt><dd id="byte-count"></dd></div>
+            </dl>
+          </div>
+          <section id="timeline-panel" class="timeline-panel view-panel" role="tabpanel" aria-labelledby="view-timeline" hidden>
+            <div class="output-toolbar"><div><h3>Parallel timeline</h3><p id="timeline-summary"></p></div></div>
+            <div id="timeline-body"><div id="timeline-lanes" class="timeline-lanes"></div><div class="timeline-axis-row"><span></span><div id="timeline-axis" class="timeline-axis"></div></div><p id="timeline-empty" class="timeline-empty" hidden>No terminals match the current filters.</p></div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>
